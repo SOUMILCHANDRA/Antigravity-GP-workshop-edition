@@ -84,18 +84,31 @@ async function bootstrap() {
     vehicleController.loadCarModel(selectedCarId, qualityManager.getSettings().tier);
   });
 
-  // Set initial surface map
-  const initialMesh = trackEditor.getGeneratedMesh();
-  if (initialMesh && initialMesh.surfaceMap) {
-    vehicleController.setSurfaceMap(initialMesh.surfaceMap);
-    const points = trackEditor.getTrackData().points;
-    if (points.length > 1) {
-      const p0 = points[0].position;
-      const p1 = points[1].position;
-      const tangentHeading = Math.atan2(p1.x - p0.x, p1.z - p0.z);
-      vehicleController.setStartPosition(new THREE.Vector3(p0.x, p0.y + 0.3, p0.z), tangentHeading);
+  const resetCarToStart = (snapCamera: boolean = true) => {
+    const trackData = trackEditor.getTrackData();
+    const mesh = trackEditor.getGeneratedMesh();
+    if (mesh && mesh.surfaceMap) {
+      vehicleController.setSurfaceMap(mesh.surfaceMap);
     }
-  }
+    if (trackData.points.length > 1) {
+      const p0 = trackData.points[0].position;
+      const p1 = trackData.points[1].position;
+      const tangentHeading = Math.atan2(p1.x - p0.x, p1.z - p0.z);
+      vehicleController.setStartPosition(new THREE.Vector3(p0.x, p0.y, p0.z), tangentHeading);
+
+      if (snapCamera) {
+        const carPos = vehicleController.getPosition();
+        const carRot = vehicleController.getQuaternion();
+        const cameraOffset = new THREE.Vector3(0, 3.2, -7.5).applyQuaternion(carRot);
+        chaseCamera.position.copy(carPos.clone().add(cameraOffset));
+        const lookTarget = carPos.clone().add(new THREE.Vector3(0, 0.9, 3.5).applyQuaternion(carRot));
+        chaseCamera.lookAt(lookTarget);
+      }
+    }
+  };
+
+  // Set initial surface map
+  resetCarToStart(false);
 
   // Initialize Editor Toolbar
   editorToolbar = new EditorToolbar(
@@ -105,6 +118,7 @@ async function bootstrap() {
       vehicleController.setVisible(true);
       if (isDrive) {
         trackEditor.setTopDown(false);
+        resetCarToStart(true);
       }
     },
     () => {
@@ -114,6 +128,13 @@ async function bootstrap() {
       carSelectModal.open();
     }
   );
+
+  // Bind 'R' key to reset car during test drive
+  window.addEventListener('keydown', (e) => {
+    if (e.key.toLowerCase() === 'r' && isDriveModeActive) {
+      resetCarToStart(true);
+    }
+  });
 
   // Initialize Stats / FPS Overlay
   const statsOverlay = new StatsOverlay(initResult.backend, initResult.adapterInfo || 'Generic GPU');
