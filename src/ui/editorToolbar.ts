@@ -2,6 +2,8 @@ import type { TrackControlPoint, TrackData, EditorTool } from '../track/types';
 import type { TrackEditor } from '../editor/trackEditor';
 import type { GeneratedTrackMesh } from '../track/trackGenerator';
 import type { VehicleTelemetry } from '../physics/vehiclePhysics';
+import type { LapTimer } from '../racing/lapTimer';
+import type { SlipstreamState } from '../racing/slipstream';
 
 export class EditorToolbar {
   private editor: TrackEditor;
@@ -11,20 +13,29 @@ export class EditorToolbar {
   private driveHudEl: HTMLDivElement;
 
   private isDriveMode: boolean = false;
+  private activeCameraName: string = 'CHASE';
+  private activeWeatherName: string = 'NOON';
+
   private onDriveModeToggleCallback?: (isDrive: boolean) => void;
   private onOpenStorageCallback?: () => void;
   private onOpenGarageCallback?: () => void;
+  private onCycleCameraCallback?: () => void;
+  private onCycleWeatherCallback?: () => void;
 
   constructor(
     editor: TrackEditor,
     onDriveModeToggle?: (isDrive: boolean) => void,
     onOpenStorage?: () => void,
-    onOpenGarage?: () => void
+    onOpenGarage?: () => void,
+    onCycleCamera?: () => void,
+    onCycleWeather?: () => void
   ) {
     this.editor = editor;
     this.onDriveModeToggleCallback = onDriveModeToggle;
     this.onOpenStorageCallback = onOpenStorage;
     this.onOpenGarageCallback = onOpenGarage;
+    this.onCycleCameraCallback = onCycleCamera;
+    this.onCycleWeatherCallback = onCycleWeather;
 
     // Create Toolbar Container
     this.toolbarEl = document.createElement('div');
@@ -53,6 +64,16 @@ export class EditorToolbar {
     document.body.appendChild(this.driveHudEl);
 
     this.bindEvents();
+  }
+
+  public setCameraName(name: string): void {
+    this.activeCameraName = name.toUpperCase();
+    this.renderToolbar();
+  }
+
+  public setWeatherName(name: string): void {
+    this.activeWeatherName = name.toUpperCase();
+    this.renderToolbar();
   }
 
   private renderToolbar(): void {
@@ -117,6 +138,12 @@ export class EditorToolbar {
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"></circle><path d="m4.93 4.93 4.24 4.24"></path><path d="m14.83 9.17 4.24-4.24"></path></svg>
           <span>🏎️ Cars</span>
         </button>
+        <button class="tool-btn weather-trigger-btn" id="btn-cycle-weather" title="Cycle Weather & Lighting">
+          <span>🌦️ ${this.activeWeatherName}</span>
+        </button>
+        <button class="tool-btn camera-trigger-btn" id="btn-cycle-camera" title="Cycle Camera (C)">
+          <span>🎥 ${this.activeCameraName}</span>
+        </button>
       </div>
 
       <div class="toolbar-divider"></div>
@@ -146,135 +173,90 @@ export class EditorToolbar {
       </div>
       <div class="inspector-body">
         <div class="inspector-field">
-          <label>Elevation: <b id="val-elev">${point.position.y.toFixed(1)}m</b></label>
-          <input type="range" id="slider-elev" min="0" max="40" step="0.5" value="${point.position.y}">
+          <label>Height (Y Elevation): <b>${point.position.y.toFixed(1)}m</b></label>
+          <input type="range" id="input-elevation" min="-20" max="60" step="0.5" value="${point.position.y}" />
         </div>
         <div class="inspector-field">
-          <label>Banking Angle: <b id="val-bank">${point.bankingDeg.toFixed(0)}°</b></label>
-          <input type="range" id="slider-bank" min="-35" max="35" step="1" value="${point.bankingDeg}">
+          <label>Banking Angle: <b>${point.bankingDeg.toFixed(1)}°</b></label>
+          <input type="range" id="input-banking" min="-35" max="35" step="1" value="${point.bankingDeg}" />
         </div>
         <div class="inspector-field">
-          <label>Track Width: <b id="val-width">${point.width.toFixed(1)}m</b></label>
-          <input type="range" id="slider-width" min="8" max="22" step="0.5" value="${point.width}">
+          <label>Track Width: <b>${point.width.toFixed(1)}m</b></label>
+          <input type="range" id="input-width" min="6" max="28" step="1" value="${point.width}" />
         </div>
-
-        <div class="inspector-section-label">SURFACE ZONES & RUNOFF</div>
+        <div class="inspector-section-label">SURFACE EXTENSIONS</div>
         <div class="inspector-checkbox-row">
           <label class="check-container">
-            <input type="checkbox" id="chk-kerb-l" ${point.kerbLeft ? 'checked' : ''}>
-            <span>Left Apex Kerb</span>
+            <input type="checkbox" id="check-kerb-left" ${point.kerbLeft ? 'checked' : ''} />
+            <span>Kerb Left</span>
           </label>
           <label class="check-container">
-            <input type="checkbox" id="chk-kerb-r" ${point.kerbRight ? 'checked' : ''}>
-            <span>Right Apex Kerb</span>
+            <input type="checkbox" id="check-kerb-right" ${point.kerbRight ? 'checked' : ''} />
+            <span>Kerb Right</span>
           </label>
         </div>
-
         <div class="inspector-field">
-          <label>Left Gravel Runoff: <b id="val-gl">${(point.gravelLeftWidth || 0).toFixed(0)}m</b></label>
-          <input type="range" id="slider-gl" min="0" max="24" step="2" value="${point.gravelLeftWidth || 0}">
+          <label>Gravel Left Width: <b>${(point.gravelLeftWidth || 0).toFixed(1)}m</b></label>
+          <input type="range" id="input-gravel-left" min="0" max="24" step="1" value="${point.gravelLeftWidth || 0}" />
         </div>
         <div class="inspector-field">
-          <label>Right Gravel Runoff: <b id="val-gr">${(point.gravelRightWidth || 0).toFixed(0)}m</b></label>
-          <input type="range" id="slider-gr" min="0" max="24" step="2" value="${point.gravelRightWidth || 0}">
+          <label>Gravel Right Width: <b>${(point.gravelRightWidth || 0).toFixed(1)}m</b></label>
+          <input type="range" id="input-gravel-right" min="0" max="24" step="1" value="${point.gravelRightWidth || 0}" />
         </div>
-
         <div class="inspector-actions">
-          <button class="btn-delete-pt" id="btn-delete-active-pt">Delete Point</button>
+          <button class="btn-delete-pt" id="btn-delete-selected">Delete Point</button>
         </div>
       </div>
     `;
 
-    // Sliders & Checkbox events
-    const elevSlider = this.inspectorEl.querySelector<HTMLInputElement>('#slider-elev');
-    const bankSlider = this.inspectorEl.querySelector<HTMLInputElement>('#slider-bank');
-    const widthSlider = this.inspectorEl.querySelector<HTMLInputElement>('#slider-width');
-    const chkKerbL = this.inspectorEl.querySelector<HTMLInputElement>('#chk-kerb-l');
-    const chkKerbR = this.inspectorEl.querySelector<HTMLInputElement>('#chk-kerb-r');
-    const glSlider = this.inspectorEl.querySelector<HTMLInputElement>('#slider-gl');
-    const grSlider = this.inspectorEl.querySelector<HTMLInputElement>('#slider-gr');
-    const deleteBtn = this.inspectorEl.querySelector<HTMLButtonElement>('#btn-delete-active-pt');
-    const closeBtn = this.inspectorEl.querySelector<HTMLButtonElement>('#btn-close-inspector');
-
-    elevSlider?.addEventListener('input', () => {
-      const val = parseFloat(elevSlider.value);
-      point.position.y = val;
-      this.inspectorEl.querySelector('#val-elev')!.textContent = `${val.toFixed(1)}m`;
-      this.editor.updateSelectedPoint({ position: point.position });
-    });
-
-    bankSlider?.addEventListener('input', () => {
-      const val = parseFloat(bankSlider.value);
-      point.bankingDeg = val;
-      this.inspectorEl.querySelector('#val-bank')!.textContent = `${val.toFixed(0)}°`;
-      this.editor.updateSelectedPoint({ bankingDeg: val });
-    });
-
-    widthSlider?.addEventListener('input', () => {
-      const val = parseFloat(widthSlider.value);
-      point.width = val;
-      this.inspectorEl.querySelector('#val-width')!.textContent = `${val.toFixed(1)}m`;
-      this.editor.updateSelectedPoint({ width: val });
-    });
-
-    chkKerbL?.addEventListener('change', () => {
-      point.kerbLeft = chkKerbL.checked;
-      this.editor.updateSelectedPoint({ kerbLeft: chkKerbL.checked });
-    });
-
-    chkKerbR?.addEventListener('change', () => {
-      point.kerbRight = chkKerbR.checked;
-      this.editor.updateSelectedPoint({ kerbRight: chkKerbR.checked });
-    });
-
-    glSlider?.addEventListener('input', () => {
-      const val = parseFloat(glSlider.value);
-      point.gravelLeftWidth = val;
-      this.inspectorEl.querySelector('#val-gl')!.textContent = `${val.toFixed(0)}m`;
-      this.editor.updateSelectedPoint({ gravelLeftWidth: val });
-    });
-
-    grSlider?.addEventListener('input', () => {
-      const val = parseFloat(grSlider.value);
-      point.gravelRightWidth = val;
-      this.inspectorEl.querySelector('#val-gr')!.textContent = `${val.toFixed(0)}m`;
-      this.editor.updateSelectedPoint({ gravelRightWidth: val });
-    });
-
-    deleteBtn?.addEventListener('click', () => {
-      this.editor.deleteSelectedPoint();
-    });
-
-    closeBtn?.addEventListener('click', () => {
-      this.inspectorEl.style.display = 'none';
-    });
+    this.bindInspectorEvents(point);
   }
 
-  public renderMetrics(track: TrackData, mesh: GeneratedTrackMesh | null): void {
-    const lengthKm = mesh ? (mesh.totalLengthMeters / 1000).toFixed(2) : '0.00';
-    const elevDelta = mesh ? (mesh.maxElevation - mesh.minElevation).toFixed(1) : '0.0';
-    const maxBank = mesh ? mesh.maxBankingDeg.toFixed(0) : '0';
-    const isClosed = track.isClosed;
+  private bindInspectorEvents(point: TrackControlPoint): void {
+    const elInput = this.inspectorEl.querySelector('#input-elevation') as HTMLInputElement;
+    const bankInput = this.inspectorEl.querySelector('#input-banking') as HTMLInputElement;
+    const widthInput = this.inspectorEl.querySelector('#input-width') as HTMLInputElement;
+    const kLeft = this.inspectorEl.querySelector('#check-kerb-left') as HTMLInputElement;
+    const kRight = this.inspectorEl.querySelector('#check-kerb-right') as HTMLInputElement;
+    const gLeft = this.inspectorEl.querySelector('#input-gravel-left') as HTMLInputElement;
+    const gRight = this.inspectorEl.querySelector('#input-gravel-right') as HTMLInputElement;
+    const delBtn = this.inspectorEl.querySelector('#btn-delete-selected') as HTMLButtonElement;
+    const closeBtn = this.inspectorEl.querySelector('#btn-close-inspector') as HTMLButtonElement;
+
+    if (elInput) elInput.addEventListener('input', () => this.editor.updatePointAttributes(point.id, { elevation: parseFloat(elInput.value) }));
+    if (bankInput) bankInput.addEventListener('input', () => this.editor.updatePointAttributes(point.id, { bankingDeg: parseFloat(bankInput.value) }));
+    if (widthInput) widthInput.addEventListener('input', () => this.editor.updatePointAttributes(point.id, { width: parseFloat(widthInput.value) }));
+    if (kLeft) kLeft.addEventListener('change', () => this.editor.updatePointAttributes(point.id, { kerbLeft: kLeft.checked }));
+    if (kRight) kRight.addEventListener('change', () => this.editor.updatePointAttributes(point.id, { kerbRight: kRight.checked }));
+    if (gLeft) gLeft.addEventListener('input', () => this.editor.updatePointAttributes(point.id, { gravelLeftWidth: parseFloat(gLeft.value) }));
+    if (gRight) gRight.addEventListener('input', () => this.editor.updatePointAttributes(point.id, { gravelRightWidth: parseFloat(gRight.value) }));
+    if (delBtn) delBtn.addEventListener('click', () => { this.editor.deletePoint(point.id); this.updateSelection(null); });
+    if (closeBtn) closeBtn.addEventListener('click', () => this.updateSelection(null));
+  }
+
+  public renderMetrics(trackData: TrackData, mesh: GeneratedTrackMesh | null): void {
+    const pointCount = trackData.points.length;
+    const isClosed = trackData.isClosed;
+    const lengthMeters = mesh ? Math.round(mesh.totalLengthMeters) : 0;
+    const triCount = mesh && mesh.roadMesh.geometry.index ? (mesh.roadMesh.geometry.index.count / 3).toLocaleString() : '0';
+    const maxBank = mesh ? Math.round(mesh.maxBankingDeg) : 0;
 
     this.metricsEl.innerHTML = `
       <div class="metrics-header">
-        <span class="metrics-title">CIRCUIT TELEMETRY</span>
-        <span class="loop-badge ${isClosed ? 'closed' : 'open'}">
-          ${isClosed ? '● LOOP CLOSED' : '○ UNCLOSED'}
-        </span>
+        <span class="metrics-title">🏁 CIRCUIT TELEMETRY</span>
       </div>
       <div class="metrics-grid">
         <div class="metric-cell">
           <span class="cell-label">LENGTH</span>
-          <span class="cell-val">${lengthKm} km</span>
+          <span class="cell-val">${lengthMeters} m</span>
         </div>
         <div class="metric-cell">
-          <span class="cell-label">POINTS</span>
-          <span class="cell-val">${track.points.length}</span>
+          <span class="cell-label">NODES</span>
+          <span class="cell-val">${pointCount}</span>
         </div>
         <div class="metric-cell">
-          <span class="cell-label">ELEVATION Δ</span>
-          <span class="cell-val">${elevDelta} m</span>
+          <span class="cell-label">ROAD TRIS</span>
+          <span class="cell-val">${triCount}</span>
         </div>
         <div class="metric-cell">
           <span class="cell-label">MAX BANKING</span>
@@ -285,7 +267,7 @@ export class EditorToolbar {
     `;
   }
 
-  public updateDriveTelemetry(telemetry: VehicleTelemetry): void {
+  public updateDriveTelemetry(telemetry: VehicleTelemetry, lapTimer?: LapTimer, slipstream?: SlipstreamState): void {
     if (!this.isDriveMode) {
       this.driveHudEl.style.display = 'none';
       return;
@@ -307,7 +289,23 @@ export class EditorToolbar {
     const gearText = telemetry.currentGear === -1 ? 'R' : telemetry.currentGear === 0 ? 'N' : `${telemetry.currentGear}`;
     const rpmPercent = Math.min(100, Math.max(0, (telemetry.engineRpm / 14000) * 100));
 
+    const currentLapTimeStr = lapTimer ? lapTimer.formatTime(lapTimer.getCurrentLapTime()) : '0:00.000';
+    const bestLapTimeStr = lapTimer && lapTimer.getBestLapTime() ? lapTimer.formatTime(lapTimer.getBestLapTime()!) : '--:--.---';
+    const lapNumber = lapTimer ? lapTimer.getCurrentLapNumber() : 1;
+
     this.driveHudEl.innerHTML = `
+      <!-- Top Bar: F1 Broadcast Timing Cluster -->
+      <div class="hud-lap-timer-cluster">
+        <div class="timing-box">
+          <span class="timing-label">LAP ${lapNumber}</span>
+          <span class="timing-value current-time">${currentLapTimeStr}</span>
+        </div>
+        <div class="timing-box">
+          <span class="timing-label">BEST LAP 🟣</span>
+          <span class="timing-value best-time">${bestLapTimeStr}</span>
+        </div>
+      </div>
+
       <div class="drive-hud-header">
         <div class="hud-car-badge">
           <span class="hud-car-title">🏎️ ${telemetry.carName}</span>
@@ -330,6 +328,12 @@ export class EditorToolbar {
         </div>
       </div>
 
+      ${slipstream && slipstream.inSlipstream ? `
+        <div class="slipstream-badge">
+          🚀 DRAFTING BEHIND ${slipstream.leaderCarName || 'CAR'} (-${slipstream.dragReductionPercent}% DRAG)
+        </div>
+      ` : ''}
+
       <div class="wheels-surface-grid">
         ${getSurfaceBadge('FL')}
         ${getSurfaceBadge('FR')}
@@ -349,7 +353,7 @@ export class EditorToolbar {
         : ''
       }
 
-      <div class="drive-controls-hint">Controls: [W] Throttle | [S] Brake/Reverse | [A/D] Steer</div>
+      <div class="drive-controls-hint">Controls: [W] Throttle | [S] Brake/Reverse | [A/D] Steer | [C] Camera | [R] Reset</div>
     `;
   }
 
@@ -381,13 +385,13 @@ export class EditorToolbar {
         this.editor.setTopDown(next);
         this.renderToolbar();
       } else if (target.id === 'btn-open-storage') {
-        if (this.onOpenStorageCallback) {
-          this.onOpenStorageCallback();
-        }
+        if (this.onOpenStorageCallback) this.onOpenStorageCallback();
       } else if (target.id === 'btn-open-garage') {
-        if (this.onOpenGarageCallback) {
-          this.onOpenGarageCallback();
-        }
+        if (this.onOpenGarageCallback) this.onOpenGarageCallback();
+      } else if (target.id === 'btn-cycle-camera') {
+        if (this.onCycleCameraCallback) this.onCycleCameraCallback();
+      } else if (target.id === 'btn-cycle-weather') {
+        if (this.onCycleWeatherCallback) this.onCycleWeatherCallback();
       } else if (target.id === 'btn-toggle-drive') {
         this.isDriveMode = !this.isDriveMode;
         if (this.onDriveModeToggleCallback) {

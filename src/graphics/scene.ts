@@ -7,9 +7,9 @@ export class AppScene {
   public camera: THREE.PerspectiveCamera;
   public controls: OrbitControls;
 
-  private dirLight: THREE.DirectionalLight;
-  private ambientLight: THREE.AmbientLight;
-  private hemiLight: THREE.HemisphereLight;
+  public dirLight: THREE.DirectionalLight;
+  public ambientLight: THREE.AmbientLight;
+  public hemiLight: THREE.HemisphereLight;
   private groundMesh: THREE.Mesh;
   private gridHelper: THREE.GridHelper;
   public testCube: THREE.Mesh;

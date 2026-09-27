@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { qualityManager } from './core/quality';
 import { RendererManager } from './graphics/renderer';
 import { AppScene } from './graphics/scene';
+import { CameraSystem } from './graphics/cameraSystem';
 import { TrackEditor } from './editor/trackEditor';
 import { EditorToolbar } from './ui/editorToolbar';
 import { StorageModal } from './ui/storageModal';
@@ -12,6 +13,11 @@ import { StatsOverlay } from './ui/statsOverlay';
 import { SettingsUI } from './ui/settingsUI';
 import { rapierWorldManager } from './physics/rapierWorld';
 import { VehicleController } from './physics/vehicleController';
+import { LapTimer } from './racing/lapTimer';
+import { AIGridManager } from './racing/aiGridManager';
+import { WeatherManager, type WeatherPreset } from './environment/weatherManager';
+import { SlipstreamSystem } from './racing/slipstream';
+import { AudioEngine } from './audio/audioEngine';
 import { type RenderBackendType } from './core/types';
 
 async function bootstrap() {
@@ -27,19 +33,38 @@ async function bootstrap() {
   const initResult = await rendererManager.init(quality);
   const renderer = initResult.renderer;
 
-  // Initialize Scene, Camera, Lighting, Shadows
+  // Initialize Scene, Lighting, Shadows
   const appScene = new AppScene(canvas, quality);
+
+  // Initialize Weather & Dynamic Lighting (Phase J & K)
+  const weatherManager = new WeatherManager(appScene);
+  const weatherPresets: WeatherPreset[] = ['clear_noon', 'sunset', 'night', 'overcast_rain'];
+  let activeWeatherIndex = 0;
 
   // Initialize Rapier 3D WASM Physics World (Phase F)
   const physicsWorld = await rapierWorldManager.init();
 
-  // Chase Camera for Test Drive Mode
+  // Chase / Multi-mode Camera for Test Drive Mode (Phase G)
   const chaseCamera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, quality.maxVisibleDrawDistance);
   chaseCamera.position.set(0, 5, -10);
+  const cameraSystem = new CameraSystem(chaseCamera);
 
   // Initialize Core Vehicle Controller with Rapier 4-Wheel Physics (Phase F)
   const vehicleController = new VehicleController(appScene.scene, physicsWorld);
   let isDriveModeActive = false;
+
+  // Initialize Lap Timing & Ghost Car System (Phase H)
+  const lapTimer = new LapTimer(appScene.scene);
+
+  // Initialize AI Grid Manager (Phase I)
+  const aiGridManager = new AIGridManager(appScene.scene);
+
+  // Initialize Slipstream System (Phase L)
+  const slipstreamSystem = new SlipstreamSystem(appScene.scene);
+
+  // Initialize Procedural Audio Engine (Phase N)
+  const audioEngine = new AudioEngine();
+  audioEngine.setCarSpecs(vehicleController.getCurrentCarSpecs());
 
   // Forward declarations for toolbar & editor coupling
   let editorToolbar: EditorToolbar;
@@ -55,15 +80,20 @@ async function bootstrap() {
       if (editorToolbar) {
         editorToolbar.renderMetrics(trackData, mesh);
       }
-      if (mesh && mesh.surfaceMap) {
-        vehicleController.setSurfaceMap(mesh.surfaceMap);
+      if (mesh) {
+        if (mesh.surfaceMap) {
+          vehicleController.setSurfaceMap(mesh.surfaceMap);
+        }
+        cameraSystem.setTrackSamples(mesh.samples);
+        lapTimer.setTrackSpline(mesh.samples);
+        aiGridManager.setupGrid(mesh.samples, mesh.surfaceMap, 4, quality.tier);
       }
       // Reposition vehicle to start of circuit
       if (trackData.points.length > 1) {
         const p0 = trackData.points[0].position;
         const p1 = trackData.points[1].position;
         const tangentHeading = Math.atan2(p1.x - p0.x, p1.z - p0.z);
-        vehicleController.setStartPosition(new THREE.Vector3(p0.x, p0.y + 0.3, p0.z), tangentHeading);
+        vehicleController.setStartPosition(new THREE.Vector3(p0.x, p0.y, p0.z), tangentHeading);
       }
     },
     (selectedPoint) => {
@@ -82,6 +112,7 @@ async function bootstrap() {
   // Initialize Car Select Modal
   carSelectModal = new CarSelectModal((selectedCarId) => {
     vehicleController.loadCarModel(selectedCarId, qualityManager.getSettings().tier);
+    audioEngine.setCarSpecs(vehicleController.getCurrentCarSpecs());
   });
 
   const resetCarToStart = (snapCamera: boolean = true) => {
@@ -96,18 +127,31 @@ async function bootstrap() {
       const tangentHeading = Math.atan2(p1.x - p0.x, p1.z - p0.z);
       vehicleController.setStartPosition(new THREE.Vector3(p0.x, p0.y, p0.z), tangentHeading);
 
+      if (mesh) {
+        cameraSystem.setTrackSamples(mesh.samples);
+        lapTimer.setTrackSpline(mesh.samples);
+        aiGridManager.setupGrid(mesh.samples, mesh.surfaceMap, 4, quality.tier);
+        aiGridManager.startRace();
+      }
+
+      lapTimer.reset();
+
       if (snapCamera) {
-        const carPos = vehicleController.getPosition();
-        const carRot = vehicleController.getQuaternion();
-        const cameraOffset = new THREE.Vector3(0, 3.2, -7.5).applyQuaternion(carRot);
-        chaseCamera.position.copy(carPos.clone().add(cameraOffset));
-        const lookTarget = carPos.clone().add(new THREE.Vector3(0, 0.9, 3.5).applyQuaternion(carRot));
-        chaseCamera.lookAt(lookTarget);
+        cameraSystem.snapToVehicle(vehicleController);
       }
     }
   };
 
-  // Set initial surface map
+  // Set initial surface map and samples
+  const initialMesh = trackEditor.getGeneratedMesh();
+  if (initialMesh) {
+    if (initialMesh.surfaceMap) {
+      vehicleController.setSurfaceMap(initialMesh.surfaceMap);
+    }
+    cameraSystem.setTrackSamples(initialMesh.samples);
+    lapTimer.setTrackSpline(initialMesh.samples);
+    aiGridManager.setupGrid(initialMesh.samples, initialMesh.surfaceMap, 4, quality.tier);
+  }
   resetCarToStart(false);
 
   // Initialize Editor Toolbar
@@ -126,6 +170,16 @@ async function bootstrap() {
     },
     () => {
       carSelectModal.open();
+    },
+    () => {
+      const nextCam = cameraSystem.cycleCamera();
+      editorToolbar.setCameraName(nextCam);
+    },
+    () => {
+      activeWeatherIndex = (activeWeatherIndex + 1) % weatherPresets.length;
+      const preset = weatherPresets[activeWeatherIndex];
+      weatherManager.applyPreset(preset);
+      editorToolbar.setWeatherName(preset.replace(/_/g, ' '));
     }
   );
 
@@ -183,26 +237,34 @@ async function bootstrap() {
 
       // 2. Interpolate Visual Transform and fetch telemetry
       const telemetry = vehicleController.updateVisuals(alpha);
-      editorToolbar.updateDriveTelemetry(telemetry);
 
-      // 3. Smooth Dynamic Chase Camera
-      const carPos = vehicleController.getPosition();
-      const carRot = vehicleController.getQuaternion();
+      // 3. Update AI Grid Racers (Phase I)
+      aiGridManager.update(deltaSeconds, vehicleController);
 
-      // Camera positioned behind (-Z) and above (+Y) chassis
-      const cameraOffset = new THREE.Vector3(0, 3.2, -7.5).applyQuaternion(carRot);
-      const targetCamPos = carPos.clone().add(cameraOffset);
-      chaseCamera.position.lerp(targetCamPos, deltaSeconds * 9);
+      // 4. Update Slipstream Drafting (Phase L)
+      const slipstream = slipstreamSystem.update(vehicleController, aiGridManager.getAiRacers(), deltaSeconds);
 
-      // Camera look target slightly ahead of car
-      const lookTarget = carPos.clone().add(new THREE.Vector3(0, 0.9, 3.5).applyQuaternion(carRot));
-      chaseCamera.lookAt(lookTarget);
+      // 5. Update Lap Timer & Ghost Car (Phase H)
+      lapTimer.update(deltaSeconds, vehicleController, telemetry);
+
+      // 6. Update Procedural Audio Engine (Phase N)
+      audioEngine.update(telemetry, isDriveModeActive);
+
+      // 7. Update Dynamic Camera System (Phase G)
+      cameraSystem.update(deltaSeconds, vehicleController, telemetry);
+
+      // 8. Update Weather (Rain particles) (Phase J & K)
+      weatherManager.update(deltaSeconds, chaseCamera.position);
+
+      // 9. Update Drive HUD
+      editorToolbar.updateDriveTelemetry(telemetry, lapTimer, slipstream);
 
       activeCam = chaseCamera;
     } else {
       const isOrbitActive = !trackEditor.isTopDown();
       appScene.update(deltaSeconds, isOrbitActive);
       activeCam = trackEditor.getActiveCamera();
+      audioEngine.update(vehicleController.getPhysics().getTelemetry(), false);
     }
 
     // Render current frame
@@ -213,11 +275,9 @@ async function bootstrap() {
   }
 
   requestAnimationFrame(animate);
-  console.info(`%c[Antigravity GP] Phase C Multi-surface Track & Off-Track Detection Active!`, 'color: #00f2fe; font-weight: bold; font-size: 14px;');
+  console.info(`%c[Antigravity GP] All Championship Phases A through O Live & Operational!`, 'color: #00f2fe; font-weight: bold; font-size: 14px;');
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  bootstrap().catch(err => {
-    console.error('[Antigravity GP] Fatal bootstrap error:', err);
-  });
+bootstrap().catch((err) => {
+  console.error('[Bootstrap] Fatal error during engine startup:', err);
 });

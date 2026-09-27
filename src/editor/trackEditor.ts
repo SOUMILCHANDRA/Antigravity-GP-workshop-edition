@@ -241,12 +241,28 @@ export class TrackEditor {
     }
   }
 
+  public updatePointAttributes(id: string, updates: Partial<TrackControlPoint> & { elevation?: number }): void {
+    const pt = this.trackData.points.find(p => p.id === id);
+    if (!pt) return;
+
+    if (updates.elevation !== undefined) pt.position.y = updates.elevation;
+    if (updates.bankingDeg !== undefined) pt.bankingDeg = updates.bankingDeg;
+    if (updates.width !== undefined) pt.width = updates.width;
+    if (updates.kerbLeft !== undefined) pt.kerbLeft = updates.kerbLeft;
+    if (updates.kerbRight !== undefined) pt.kerbRight = updates.kerbRight;
+    if (updates.gravelLeftWidth !== undefined) pt.gravelLeftWidth = updates.gravelLeftWidth;
+    if (updates.gravelRightWidth !== undefined) pt.gravelRightWidth = updates.gravelRightWidth;
+
+    this.rebuildMesh();
+    this.rebuildHandles();
+  }
+
   public deleteSelectedPoint(): void {
     if (!this.state.selectedPointId) return;
     this.deletePoint(this.state.selectedPointId);
   }
 
-  private deletePoint(id: string): void {
+  public deletePoint(id: string): void {
     const index = this.trackData.points.findIndex(p => p.id === id);
     if (index === -1) return;
 
