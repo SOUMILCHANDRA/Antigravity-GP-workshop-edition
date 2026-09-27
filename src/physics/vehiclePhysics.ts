@@ -11,10 +11,10 @@ export interface WheelState {
   name: 'FL' | 'FR' | 'RL' | 'RR';
   isFront: boolean;
   isLeft: boolean;
-  hardpointLocal: THREE.Vector3; // Relative to chassis origin
+  hardpointLocal: THREE.Vector3;
   contactWorldPos: THREE.Vector3;
   rayHitDistance: number;
-  suspensionCompression: number; // 0 (uncompressed) .. maxTravel
+  suspensionCompression: number; // 0..maxTravel
   springForceN: number;
   damperForceN: number;
   normalLoadFz: number; // Vertical load on tire (N)
@@ -23,7 +23,7 @@ export interface WheelState {
   surfaceResult: SurfaceSampleResult;
   tireForce: TireForceResult;
   isGrounded: boolean;
-  wheelLinearSpeedMs: number; // Wheel forward surface speed = omega * R
+  wheelLinearSpeedMs: number;
 }
 
 export interface VehicleTelemetry {
@@ -53,28 +53,25 @@ export class VehiclePhysics {
   private surfaceMap: SurfaceMap | null = null;
   private powertrain: Powertrain;
 
-  // Suspension & Dimensions
-  private wheelRadius: number = 0.33; // ~66cm diameter F1 tire
-  private suspensionRestLength: number = 0.32;
-  private suspensionMaxTravel: number = 0.16;
-  private springStiffness: number = 38000; // N/m
-  private damperCompression: number = 3200; // Ns/m
-  private damperRebound: number = 4200; // Ns/m
-  private antiRollBarStiffnessFront: number = 8000; // N/m
-  private antiRollBarStiffnessRear: number = 6000;  // N/m
+  // Wheel & Suspension Dimensions
+  private wheelRadius: number = 0.33; // 66cm diameter F1 tire
+  private suspensionRestLength: number = 0.28;
+  private suspensionMaxTravel: number = 0.14;
+  private springStiffness: number = 24000; // N/m
+  private damperRate: number = 2200; // Ns/m
+  private antiRollBarStiffness: number = 4000; // N/m
 
   // Wheel States (FL, FR, RL, RR)
   private wheels: WheelState[] = [];
-  private previousWheelCompressions: number[] = [0, 0, 0, 0];
 
-  // Control Inputs
+  // Inputs
   private throttleInput: number = 0;
   private brakeInput: number = 0;
-  private steerInput: number = 0; // -1 (left) .. +1 (right)
+  private steerInput: number = 0;
   private smoothedSteerAngle: number = 0;
   private maxSteerAngleRad: number = THREE.MathUtils.degToRad(30);
 
-  // Dynamic Acceleration Tracking (for G-forces and weight transfer)
+  // Dynamic Acceleration Tracking (for G-meter)
   private lastLinearVelocity: THREE.Vector3 = new THREE.Vector3();
   private smoothedAcceleration: THREE.Vector3 = new THREE.Vector3();
 
@@ -89,29 +86,32 @@ export class VehiclePhysics {
     this.specs = specs;
     this.powertrain = new Powertrain(specs);
 
+    // Initial spawn height slightly above ground
+    const spawnY = initialPosition.y + this.wheelRadius + this.suspensionRestLength * 0.7;
+
     // Create Rapier Dynamic Rigid Body
     const rigidBodyDesc = RAPIER.RigidBodyDesc.dynamic()
-      .setTranslation(initialPosition.x, initialPosition.y + 0.3, initialPosition.z)
+      .setTranslation(initialPosition.x, spawnY, initialPosition.z)
       .setRotation({
         x: 0,
         y: Math.sin(initialHeadingRad / 2),
         z: 0,
         w: Math.cos(initialHeadingRad / 2)
       })
-      .setLinearDamping(0.05)
-      .setAngularDamping(0.8)
+      .setLinearDamping(0.12)
+      .setAngularDamping(3.5) // High angular damping prevents wild flipping/tumbling
       .setCanSleep(false);
 
     this.rigidBody = this.world.createRigidBody(rigidBodyDesc);
 
-    // Create Chassis Box Collider (protects against tunneling & collisions)
-    const halfLength = specs.lengthMeters * 0.45;
-    const halfWidth = specs.widthMeters * 0.42;
-    const halfHeight = 0.22;
+    // Create Chassis Box Collider
+    const halfLength = specs.lengthMeters * 0.44;
+    const halfWidth = specs.widthMeters * 0.40;
+    const halfHeight = 0.18;
     const colliderDesc = RAPIER.ColliderDesc.cuboid(halfWidth, halfHeight, halfLength)
       .setMass(specs.massKg)
       .setFriction(0.2)
-      .setRestitution(0.1);
+      .setRestitution(0.05);
 
     this.world.createCollider(colliderDesc, this.rigidBody);
 
@@ -133,11 +133,11 @@ export class VehiclePhysics {
     const halfL = this.specs.wheelbaseMeters / 2;
     const halfWFront = this.specs.frontTrackMeters / 2;
     const halfWRear = this.specs.rearTrackMeters / 2;
-    const hardpointHeight = 0.10; // Attachment point above chassis bottom
+    const hardpointHeight = 0.05;
 
-    // Note: In Rapier/Three chassis space:
-    // +Z is Forward, -Z is Rear (standard longitudinal)
-    // +X is Right, -X is Left (lateral)
+    // In Chassis coordinates:
+    // +Z is Forward, -Z is Rear
+    // +X is Right, -X is Left
     // +Y is Up
     this.wheels = [
       {
@@ -245,15 +245,25 @@ export class VehiclePhysics {
   }
 
   public teleport(position: THREE.Vector3, headingRad: number): void {
+    let groundY = position.y;
+    if (this.surfaceMap) {
+      groundY = this.surfaceMap.sampleSurface(position.x, position.z).elevation;
+    }
+
+    const spawnY = groundY + this.wheelRadius + this.suspensionRestLength * 0.5;
     const rot = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), headingRad);
-    this.rigidBody.setTranslation({ x: position.x, y: position.y + 0.35, z: position.z }, true);
+
+    this.rigidBody.setTranslation({ x: position.x, y: spawnY, z: position.z }, true);
     this.rigidBody.setRotation({ x: rot.x, y: rot.y, z: rot.z, w: rot.w }, true);
     this.rigidBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.rigidBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+
     this.wheels.forEach(w => {
       w.angularVelocityRadS = 0;
       w.suspensionCompression = 0;
+      w.normalLoadFz = (this.specs.massKg * 9.81) / 4;
     });
+
     this.syncInitialState();
   }
 
@@ -270,7 +280,6 @@ export class VehiclePhysics {
    * Fixed 120Hz physics sub-step integration
    */
   public stepSubstep(dt: number): void {
-    // Cache previous state for render interpolation
     this.prevPosition.copy(this.currPosition);
     this.prevRotation.copy(this.currRotation);
 
@@ -286,57 +295,43 @@ export class VehiclePhysics {
 
     // Chassis Direction Vectors
     const forwardVec = new THREE.Vector3(0, 0, 1).applyQuaternion(chassisQuat).normalize();
-    const rightVec = new THREE.Vector3(1, 0, 0).applyQuaternion(chassisQuat).normalize();
     const upVec = new THREE.Vector3(0, 1, 0).applyQuaternion(chassisQuat).normalize();
 
-    // Local linear velocity
     const localForwardSpeed = worldLinvel.dot(forwardVec);
 
-    // Acceleration calculation for G-meter and weight transfer
+    // Acceleration for G-meter
     const currentAccel = worldLinvel.clone().sub(this.lastLinearVelocity).divideScalar(dt);
     this.lastLinearVelocity.copy(worldLinvel);
-    this.smoothedAcceleration.lerp(currentAccel, dt * 15);
+    this.smoothedAcceleration.lerp(currentAccel, Math.min(1, dt * 15));
 
-    // Steer input smoothing (with speed-sensitive steering reduction)
+    // Speed-sensitive steering
     const speedKmh = Math.abs(localForwardSpeed * 3.6);
-    const speedSteerFactor = Math.max(0.35, 1.0 - (speedKmh / 280) * 0.65);
+    const speedSteerFactor = Math.max(0.30, 1.0 - (speedKmh / 260) * 0.70);
     const targetSteerAngle = -this.steerInput * this.maxSteerAngleRad * speedSteerFactor;
-    this.smoothedSteerAngle = THREE.MathUtils.lerp(this.smoothedSteerAngle, targetSteerAngle, dt * 18);
+    this.smoothedSteerAngle = THREE.MathUtils.lerp(this.smoothedSteerAngle, targetSteerAngle, Math.min(1, dt * 18));
 
-    // 1. Suspension & Surface Raycasting per Wheel
     const totalMass = this.specs.massKg;
     const gravity = 9.81;
-    const staticLoadFront = (totalMass * gravity * this.specs.weightDistributionFrontRatio) / 2;
-    const staticLoadRear = (totalMass * gravity * (1.0 - this.specs.weightDistributionFrontRatio)) / 2;
+    const maxSuspensionForcePerWheel = totalMass * gravity * 1.5; // Safety clamp
 
-    // Dynamic Weight Transfer Forces
-    const hCg = this.specs.centerOfGravityHeightMeters;
-    const wheelbase = this.specs.wheelbaseMeters;
-    const trackWidth = (this.specs.frontTrackMeters + this.specs.rearTrackMeters) / 2;
-
-    const longAccel = this.smoothedAcceleration.dot(forwardVec);
-    const latAccel = this.smoothedAcceleration.dot(rightVec);
-
-    const deltaLoadLongitudinal = (totalMass * longAccel * hCg) / wheelbase;
-    const deltaLoadLateralFront = (totalMass * latAccel * hCg * this.specs.weightDistributionFrontRatio) / trackWidth;
-    const deltaLoadLateralRear = (totalMass * latAccel * hCg * (1 - this.specs.weightDistributionFrontRatio)) / trackWidth;
-
-    // Average rear wheel velocity for powertrain
-    const rearWheelsAvgAngVel = (this.wheels[2].angularVelocityRadS + this.wheels[3].angularVelocityRadS) * 0.5;
+    // Powertrain update
+    const rearAvgAngVel = (this.wheels[2].angularVelocityRadS + this.wheels[3].angularVelocityRadS) * 0.5;
     const powertrainOut = this.powertrain.update(
       this.throttleInput,
       this.brakeInput,
-      rearWheelsAvgAngVel,
+      rearAvgAngVel,
       localForwardSpeed,
       dt
     );
 
-    // 2. Iterate each wheel: Raycast ground, compute suspension, and apply Pacejka tire forces
+    // 1. Process 4 Suspension Springs & Raycasts
+    let groundedWheelCount = 0;
+
     for (let i = 0; i < 4; i++) {
       const wheel = this.wheels[i];
       const hardpointWorld = wheel.hardpointLocal.clone().applyQuaternion(chassisQuat).add(chassisPos);
 
-      // Sample surface from track SurfaceMap
+      // Query Track Elevation at hardpoint (x, z)
       let groundElevation = 0;
       let groundNormal = new THREE.Vector3(0, 1, 0);
       let sampleResult = this.getDefaultSurfaceResult();
@@ -349,39 +344,45 @@ export class VehiclePhysics {
 
       wheel.surfaceResult = sampleResult;
 
-      // Calculate ground contact intersection
-      const groundContactY = groundElevation;
-      const heightAboveGround = hardpointWorld.y - groundContactY;
-      const hitDistance = Math.max(0, heightAboveGround - this.wheelRadius);
+      // Distance from hardpoint down to ground
+      const currentSuspensionLength = hardpointWorld.y - (groundElevation + this.wheelRadius);
+      const isGrounded = currentSuspensionLength <= this.suspensionRestLength && currentSuspensionLength >= -0.20;
 
-      const isHit = hitDistance <= this.suspensionRestLength;
-      wheel.isGrounded = isHit;
+      wheel.isGrounded = isGrounded;
 
-      if (isHit) {
-        const compression = Math.max(0, Math.min(this.suspensionMaxTravel, this.suspensionRestLength - hitDistance));
+      if (isGrounded) {
+        groundedWheelCount++;
+
+        // Compression (0..maxTravel)
+        const rawCompression = this.suspensionRestLength - currentSuspensionLength;
+        const compression = Math.max(0, Math.min(this.suspensionMaxTravel, rawCompression));
         wheel.suspensionCompression = compression;
-        wheel.contactWorldPos.set(hardpointWorld.x, groundContactY + this.wheelRadius, hardpointWorld.z);
 
-        // Suspension Velocity (Compression Rate)
-        const compressionVelocity = (compression - this.previousWheelCompressions[i]) / dt;
-        this.previousWheelCompressions[i] = compression;
+        // Wheel contact world position
+        wheel.contactWorldPos.set(hardpointWorld.x, groundElevation + this.wheelRadius, hardpointWorld.z);
+
+        // Suspension velocity using hardpoint motion along ground normal
+        const rHardpoint = hardpointWorld.clone().sub(chassisPos);
+        const hardpointVelocity = worldLinvel.clone().add(worldAngvel.clone().cross(rHardpoint));
+        const suspensionCompVelocity = -hardpointVelocity.dot(groundNormal);
 
         // Spring + Damper Force
-        const damperRate = compressionVelocity >= 0 ? this.damperCompression : this.damperRebound;
         wheel.springForceN = this.springStiffness * compression;
-        wheel.damperForceN = damperRate * compressionVelocity;
+        wheel.damperForceN = this.damperRate * suspensionCompVelocity;
 
-        let dynamicLoad = wheel.isFront
-          ? staticLoadFront - deltaLoadLongitudinal * 0.5 + (wheel.isLeft ? -deltaLoadLateralFront : deltaLoadLateralFront)
-          : staticLoadRear + deltaLoadLongitudinal * 0.5 + (wheel.isLeft ? -deltaLoadLateralRear : deltaLoadLateralRear);
+        const rawTotalSuspForce = wheel.springForceN + wheel.damperForceN;
+        const totalSuspForce = Math.max(0, Math.min(maxSuspensionForcePerWheel, rawTotalSuspForce));
+        wheel.normalLoadFz = totalSuspForce;
 
-        wheel.normalLoadFz = Math.max(100, Math.min(totalMass * gravity * 2.5, dynamicLoad + wheel.springForceN + wheel.damperForceN));
+        // Apply upward suspension force at hardpoint
+        const suspForceVec = groundNormal.clone().multiplyScalar(totalSuspForce);
+        this.rigidBody.addForceAtPoint(
+          { x: suspForceVec.x, y: suspForceVec.y, z: suspForceVec.z },
+          { x: hardpointWorld.x, y: hardpointWorld.y, z: hardpointWorld.z },
+          true
+        );
 
-        // Apply Suspension Upward Force to Chassis
-        const suspensionForceWorld = groundNormal.clone().multiplyScalar(wheel.springForceN + wheel.damperForceN);
-        this.applyForceAtWorldPoint(suspensionForceWorld, hardpointWorld);
-
-        // Wheel Direction with Steering
+        // Wheel Direction & Steering
         wheel.steerAngleRad = wheel.isFront ? this.smoothedSteerAngle : 0;
         const wheelHeadingQuat = chassisQuat.clone().multiply(
           new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), wheel.steerAngleRad)
@@ -390,27 +391,22 @@ export class VehiclePhysics {
         const wheelForward = new THREE.Vector3(0, 0, 1).applyQuaternion(wheelHeadingQuat).normalize();
         const wheelRight = new THREE.Vector3(1, 0, 0).applyQuaternion(wheelHeadingQuat).normalize();
 
-        // Velocity at wheel contact patch
-        const rChassisToContact = wheel.contactWorldPos.clone().sub(chassisPos);
-        const contactVelocity = worldLinvel.clone().add(worldAngvel.clone().cross(rChassisToContact));
+        // Contact patch velocity
+        const wheelLongSpeed = hardpointVelocity.dot(wheelForward);
+        const wheelLatSpeed = hardpointVelocity.dot(wheelRight);
 
-        const wheelLongSpeed = contactVelocity.dot(wheelForward);
-        const wheelLatSpeed = contactVelocity.dot(wheelRight);
-
-        // Longitudinal Drive & Brake Torques
+        // Drive & Brake torques
         const driveTorque = !wheel.isFront ? powertrainOut.driveTorquePerRearWheelNm : 0;
         const brakeTorque = wheel.isFront ? powertrainOut.wheelBrakeTorqueFrontNm : powertrainOut.wheelBrakeTorqueRearNm;
 
-        // Wheel Angular Acceleration & Slip
-        const wheelInertia = 1.2; // kg*m^2 per wheel
-        const netWheelTorque = driveTorque - Math.sign(wheel.angularVelocityRadS) * brakeTorque;
-        const angularAccel = netWheelTorque / wheelInertia;
-        wheel.angularVelocityRadS += angularAccel * dt;
-
+        // Wheel angular acceleration
+        const wheelInertia = 1.0;
+        const netTorque = driveTorque - Math.sign(wheel.angularVelocityRadS || 1) * brakeTorque;
+        wheel.angularVelocityRadS += (netTorque / wheelInertia) * dt;
         wheel.wheelLinearSpeedMs = wheel.angularVelocityRadS * this.wheelRadius;
 
-        // Calculate Slip Ratio & Slip Angle
-        const maxV = Math.max(0.5, Math.abs(wheelLongSpeed));
+        // Slip ratios
+        const maxV = Math.max(0.6, Math.abs(wheelLongSpeed));
         const slipRatio = Math.max(-1.0, Math.min(1.0, (wheel.wheelLinearSpeedMs - wheelLongSpeed) / maxV));
         const slipAngleRad = Math.atan2(wheelLatSpeed, Math.max(1.0, Math.abs(wheelLongSpeed)));
 
@@ -423,76 +419,98 @@ export class VehiclePhysics {
           this.specs.tireType
         );
 
-        // Apply Longitudinal & Lateral Forces to Chassis at Contact Patch
-        const totalTireForceWorld = wheelForward.clone().multiplyScalar(wheel.tireForce.fx)
+        // Apply tire planar traction force at hardpoint level
+        const tireForceWorld = wheelForward.clone().multiplyScalar(wheel.tireForce.fx)
           .add(wheelRight.clone().multiplyScalar(wheel.tireForce.fy));
 
-        // Rolling resistance & Surface Drag Penalty
-        const rollingResistForce = -Math.sign(wheelLongSpeed) * (0.015 * wheel.normalLoadFz * sampleResult.surface.rollingDragMultiplier);
-        totalTireForceWorld.add(wheelForward.clone().multiplyScalar(rollingResistForce));
+        // Rolling resistance & Gravel deceleration
+        const rollingResist = -Math.sign(wheelLongSpeed) * (0.012 * wheel.normalLoadFz * sampleResult.surface.rollingDragMultiplier);
+        tireForceWorld.add(wheelForward.clone().multiplyScalar(rollingResist));
 
-        // Gravel Drag Penalty (Phase C)
         if (sampleResult.surface.decelerationPenalty > 0) {
-          const gravelDecelForce = -Math.sign(wheelLongSpeed) * (totalMass * sampleResult.surface.decelerationPenalty * 0.25);
-          totalTireForceWorld.add(wheelForward.clone().multiplyScalar(gravelDecelForce));
+          const gravelDecel = -Math.sign(wheelLongSpeed) * (totalMass * sampleResult.surface.decelerationPenalty * 0.25);
+          tireForceWorld.add(wheelForward.clone().multiplyScalar(gravelDecel));
         }
 
-        this.applyForceAtWorldPoint(totalTireForceWorld, wheel.contactWorldPos);
+        this.rigidBody.addForceAtPoint(
+          { x: tireForceWorld.x, y: tireForceWorld.y, z: tireForceWorld.z },
+          { x: hardpointWorld.x, y: hardpointWorld.y, z: hardpointWorld.z },
+          true
+        );
 
-        // Wheel Speed Damping when braking / locked
-        if (this.brakeInput > 0.1 && Math.abs(wheel.wheelLinearSpeedMs) < 0.2 && Math.abs(wheelLongSpeed) < 0.2) {
+        // Anti-spin brake lock
+        if (this.brakeInput > 0.2 && Math.abs(wheel.wheelLinearSpeedMs) < 0.3) {
           wheel.angularVelocityRadS = 0;
         }
       } else {
-        // Airborne wheel
+        // In the air
         wheel.suspensionCompression = 0;
         wheel.normalLoadFz = 0;
         wheel.tireForce = { fx: 0, fy: 0, slipAngleDeg: 0, slipRatio: 0, gripFraction: 0 };
-        wheel.angularVelocityRadS *= Math.max(0, 1.0 - dt * 2.0); // Spin-down in air
+        wheel.angularVelocityRadS *= Math.max(0, 1.0 - dt * 2.0);
       }
     }
 
-    // 3. Anti-Roll Bars Coupling (Front & Rear)
-    const arbTravelDiffFront = this.wheels[0].suspensionCompression - this.wheels[1].suspensionCompression;
-    const arbForceFront = arbTravelDiffFront * this.antiRollBarStiffnessFront;
-    this.applyForceAtWorldPoint(upVec.clone().multiplyScalar(-arbForceFront), this.wheels[0].contactWorldPos);
-    this.applyForceAtWorldPoint(upVec.clone().multiplyScalar(arbForceFront), this.wheels[1].contactWorldPos);
+    // 2. Anti-Roll Bar Coupling
+    if (this.wheels[0].isGrounded && this.wheels[1].isGrounded) {
+      const arbFront = (this.wheels[0].suspensionCompression - this.wheels[1].suspensionCompression) * this.antiRollBarStiffness;
+      this.rigidBody.addForceAtPoint({ x: 0, y: -arbFront, z: 0 }, this.wheels[0].hardpointLocal.clone().applyQuaternion(chassisQuat).add(chassisPos), true);
+      this.rigidBody.addForceAtPoint({ x: 0, y: arbFront, z: 0 }, this.wheels[1].hardpointLocal.clone().applyQuaternion(chassisQuat).add(chassisPos), true);
+    }
+    if (this.wheels[2].isGrounded && this.wheels[3].isGrounded) {
+      const arbRear = (this.wheels[2].suspensionCompression - this.wheels[3].suspensionCompression) * this.antiRollBarStiffness;
+      this.rigidBody.addForceAtPoint({ x: 0, y: -arbRear, z: 0 }, this.wheels[2].hardpointLocal.clone().applyQuaternion(chassisQuat).add(chassisPos), true);
+      this.rigidBody.addForceAtPoint({ x: 0, y: arbRear, z: 0 }, this.wheels[3].hardpointLocal.clone().applyQuaternion(chassisQuat).add(chassisPos), true);
+    }
 
-    const arbTravelDiffRear = this.wheels[2].suspensionCompression - this.wheels[3].suspensionCompression;
-    const arbForceRear = arbTravelDiffRear * this.antiRollBarStiffnessRear;
-    this.applyForceAtWorldPoint(upVec.clone().multiplyScalar(-arbForceRear), this.wheels[2].contactWorldPos);
-    this.applyForceAtWorldPoint(upVec.clone().multiplyScalar(arbForceRear), this.wheels[3].contactWorldPos);
+    // 3. Aerodynamics (Downforce & Drag)
+    const speed = worldLinvel.length();
+    const speedSquared = speed * speed;
+    const airDensity = 1.225;
+    const downforceMagnitude = Math.min(totalMass * gravity * 2.0, 0.5 * airDensity * speedSquared * this.specs.downforceCoefficient * this.specs.frontalAreaM2);
+    const dragMagnitude = 0.5 * airDensity * speedSquared * this.specs.dragCoefficient * this.specs.frontalAreaM2;
 
-    // 4. Aerodynamic Downforce & Drag
-    const airDensity = 1.225; // kg/m^3
-    const speedSquared = localForwardSpeed * localForwardSpeed;
-    const aeroDownforce = 0.5 * airDensity * speedSquared * this.specs.downforceCoefficient * this.specs.frontalAreaM2 * 9.81;
-    const aeroDrag = 0.5 * airDensity * speedSquared * this.specs.dragCoefficient * this.specs.frontalAreaM2;
+    if (downforceMagnitude > 0) {
+      this.rigidBody.addForce({ x: 0, y: -downforceMagnitude, z: 0 }, true);
+    }
+    if (dragMagnitude > 0 && speed > 0.1) {
+      const dragDir = worldLinvel.clone().normalize().negate();
+      this.rigidBody.addForce({ x: dragDir.x * dragMagnitude, y: dragDir.y * dragMagnitude, z: dragDir.z * dragMagnitude }, true);
+    }
 
-    // Downforce pushes downward onto chassis
-    this.applyForceAtWorldPoint(upVec.clone().multiplyScalar(-aeroDownforce), chassisPos);
-    // Aero Drag opposes forward motion
-    this.applyForceAtWorldPoint(forwardVec.clone().multiplyScalar(-Math.sign(localForwardSpeed) * aeroDrag), chassisPos);
+    // 4. Anti-Roll / Upright Stabilization Force
+    // Keeps the car naturally upright and stable on the ground
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    const tiltCross = upVec.clone().cross(worldUp);
+    const tiltAngle = upVec.angleTo(worldUp);
 
-    // Update current interpolated state buffer
+    if (tiltAngle > 0.05) {
+      const stabilizingTorque = tiltCross.multiplyScalar(tiltAngle * totalMass * 18);
+      this.rigidBody.addTorque({ x: stabilizingTorque.x, y: stabilizingTorque.y, z: stabilizingTorque.z }, true);
+    }
+
+    // 5. Safety velocity clamp (prevents physics explosions)
+    const maxAllowedSpeed = (this.specs.topSpeedKmh / 3.6) * 1.15;
+    const currentLinvel = this.rigidBody.linvel();
+    const currentSpeed = Math.hypot(currentLinvel.x, currentLinvel.z);
+
+    if (currentSpeed > maxAllowedSpeed) {
+      const scale = maxAllowedSpeed / currentSpeed;
+      this.rigidBody.setLinvel({ x: currentLinvel.x * scale, y: currentLinvel.y, z: currentLinvel.z * scale }, true);
+    }
+
+    // Clamp vertical velocity
+    if (Math.abs(currentLinvel.y) > 25) {
+      this.rigidBody.setLinvel({ x: currentLinvel.x, y: Math.sign(currentLinvel.y) * 25, z: currentLinvel.z }, true);
+    }
+
+    // Update interpolated transform buffer
     const nextTrans = this.rigidBody.translation();
     const nextRot = this.rigidBody.rotation();
     this.currPosition.set(nextTrans.x, nextTrans.y, nextTrans.z);
     this.currRotation.set(nextRot.x, nextRot.y, nextRot.z, nextRot.w);
   }
 
-  private applyForceAtWorldPoint(forceWorld: THREE.Vector3, pointWorld: THREE.Vector3): void {
-    if (isNaN(forceWorld.x) || isNaN(forceWorld.y) || isNaN(forceWorld.z)) return;
-    this.rigidBody.addForceAtPoint(
-      { x: forceWorld.x, y: forceWorld.y, z: forceWorld.z },
-      { x: pointWorld.x, y: pointWorld.y, z: pointWorld.z },
-      true
-    );
-  }
-
-  /**
-   * Returns smooth interpolated visual state between physics sub-steps
-   */
   public getInterpolatedTransform(alpha: number): { position: THREE.Vector3; rotation: THREE.Quaternion } {
     const pos = this.prevPosition.clone().lerp(this.currPosition, alpha);
     const rot = this.prevRotation.clone().slerp(this.currRotation, alpha);
